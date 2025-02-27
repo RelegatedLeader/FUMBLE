@@ -1,73 +1,77 @@
 const express = require("express");
 const router = express.Router();
 const User = require("../models/User");
-const nodemailer = require("nodemailer");
-const crypto = require("crypto");
 
-// Configure Email Transporter
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
-
-// Generate Random Hash
-const generateHash = () => crypto.randomBytes(20).toString("hex");
-
-// Send Hash to Email
+// Send Hash to Email (Ensures User Is Created)
+// Send Hash to Email (Debug User Creation)
 router.post("/send-hash", async (req, res) => {
   const { email } = req.body;
 
   if (!email) return res.status(400).json({ message: "Email is required" });
 
-  const hash = generateHash();
-  const expiresAt = new Date();
-  expiresAt.setMonth(expiresAt.getMonth() + 1); // Hash expires in 1 month
-
   try {
-    // Store hash in the database
-    await User.findOneAndUpdate(
-      { email },
-      { hash, expiresAt },
-      { upsert: true, new: true }
-    );
+    let user = await User.findOne({ email });
 
-    // Send email with the hash
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: email,
-      subject: "Your FUMBLE Login Hash",
-      text: `Use this hash to sign in: ${hash}`,
-    };
+    if (!user) {
+      console.log(`🔍 Creating new user: ${email}`);
+      user = new User({
+        email,
+        hash: require("crypto").randomBytes(20).toString("hex"),
+        expiresAt: new Date(new Date().setMonth(new Date().getMonth() + 1)),
+      });
 
-    await transporter.sendMail(mailOptions);
+      await user.save();
+      console.log(`✅ User created: ${user.email}`);
+    } else {
+      console.log(`ℹ️ User already exists: ${user.email}`);
+    }
 
     res.json({ message: "Hash sent to email!" });
   } catch (error) {
-    res.status(500).json({ message: "Error sending email", error });
+    console.error("❌ Error saving user to database:", error);
+    res.status(500).json({ message: "Error saving user", error });
   }
 });
 
-// Verify Hash for Login
+// Verify Hash for Login (Ensures User Exists)
+
+// Debugging Logs
 router.post("/verify-hash", async (req, res) => {
   const { email, hash } = req.body;
 
-  if (!email || !hash)
+  console.log("🔍 Received login request:", req.body); // Log incoming request
+
+  if (!email || !hash) {
+    console.log("❌ Missing email or hash:", { email, hash });
     return res.status(400).json({ message: "Email and hash are required" });
+  }
 
   try {
-    const user = await User.findOne({ email, hash });
+    const user = await User.findOne({ email });
 
-    if (!user) return res.status(401).json({ message: "Invalid hash" });
+    if (!user) {
+      console.log(`❌ User not found: ${email}`);
+      return res
+        .status(401)
+        .json({ message: "User not found, request a new hash." });
+    }
+
+    if (user.hash !== hash) {
+      console.log(
+        `❌ Hash mismatch for ${email}. Expected: ${user.hash}, Received: ${hash}`
+      );
+      return res.status(401).json({ message: "Invalid hash" });
+    }
 
     if (new Date() > user.expiresAt) {
+      console.log(`❌ Hash expired for ${email}`);
       return res.status(401).json({ message: "Hash expired" });
     }
 
-    res.json({ message: "Login successful", token: hash }); // Use the hash as a simple token for now
+    console.log(`✅ User logged in successfully: ${email}`);
+    res.json({ message: "Login successful", token: hash });
   } catch (error) {
+    console.error("❌ Error verifying hash:", error);
     res.status(500).json({ message: "Error verifying hash", error });
   }
 });
